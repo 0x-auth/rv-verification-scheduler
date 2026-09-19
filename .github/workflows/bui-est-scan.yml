@@ -1,0 +1,34 @@
+name: RTL Verification Structural Scan
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  lint-and-route:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Repository Code
+      uses: actions/checkout@v4
+
+    - name: Set up Python Environment
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Execute bui-est Core Routing Scan
+      run: |
+        chmod +x parse_core.py
+        chmod +x test_pipeline_harness.sh
+        ./test_pipeline_harness.sh > verification_report.json
+        cat verification_report.json
+
+    - name: Archive Generated EDA Tool Recipes
+      uses: actions/upload-artifact@v4
+      with:
+        name: eda-verification-recipes
+        path: |
+          verification_report.json
