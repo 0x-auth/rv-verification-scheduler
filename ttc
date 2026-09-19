@@ -1,0 +1,97 @@
+import json
+import sys
+
+def evaluate_verification_path(metrics_json_str):
+    try:
+        metrics = json.loads(metrics_json_str)
+    except Exception as e:
+        print(f"JSON Parsing Error inside ttc: {str(e)}", file=sys.stderr)
+        sys.exit(1)
+    
+    module_name = metrics.get("module_name", "dut")
+    control = metrics.get("control_density", 0)
+    arithmetic = metrics.get("arithmetic_density", 0)
+    registers = metrics.get("state_registers", 0)
+    sv_interfaces = metrics.get("sv_interfaces", 0)
+    sv_structs = metrics.get("sv_structs", 0)
+    sva_count = metrics.get("sva_assertions", 0)
+    rvvi_count = metrics.get("rvvi_trace_interfaces", 0)
+    
+    routing_decision = "SIMULATION"
+    confidence_score = 0.0
+    reasoning = ""
+    
+    total_structural_complexity = registers + (sv_interfaces * 4) + (sv_structs * 2)
+    
+    # Corrected evaluation thresholds reflecting all tracked structural vectors
+    if arithmetic == 0 and control > 0 and rvvi_count == 0:
+        routing_decision = "FORMAL"
+        confidence_score = 1.0
+        reasoning = "Pure control logic layout without math operator complexity. Ideal target for complete formal proofs."
+    elif rvvi_count > 0 and control >= arithmetic:
+        routing_decision = "FORMAL"
+        confidence_score = 0.95
+        reasoning = "Decoupled RVVI compliance verification protocols detected. Structured trace interfaces align with formal model verification."
+    elif control > (arithmetic * 3) and total_structural_complexity < 64:
+        routing_decision = "FORMAL"
+        confidence_score = 0.85
+        reasoning = "Control state paths dominate arithmetic operations with clean, bounded SystemVerilog signal grouping structures."
+    elif arithmetic > control:
+        routing_decision = "SIMULATION"
+        confidence_score = 0.90
+        reasoning = "High arithmetic operator density will trigger immediate state space explosion in model checkers."
+    else:
+        routing_decision = "HYBRID_SPLIT"
+        confidence_score = 0.70
+        reasoning = "Balanced density profile. Requires structural partitioning between formal control block and mathematical datapath."
+        
+    tcl_recipe = []
+    sim_recipe = []
+    
+    # Correct file extension based on presence of advanced constructs
+    ext = "sv" if (sv_interfaces > 0 or sv_structs > 0 or rvvi_count > 0) else "v"
+    
+    if routing_decision in ["FORMAL", "HYBRID_SPLIT"]:
+        tcl_recipe = [
+            f"# Automated Formal Script Generation for {module_name}",
+            "clear -all",
+            f"analyze -sv {module_name}.{ext}",
+            f"elaborate -top {module_name}",
+            "clock clk",
+            "reset rst",
+            "proven -all"
+        ]
+        
+    if routing_decision in ["SIMULATION", "HYBRID_SPLIT"]:
+        sim_recipe = [
+            f"# Automated Testbench Compilation for {module_name}",
+            "vlib work",
+            f"vlog +acc {module_name}.{ext}",
+            f"vsim -c -do \"run -all; quit\" work.{module_name}_tb"
+        ]
+        
+    strategy = {
+        "target_module": module_name,
+        "recommended_engine": routing_decision,
+        "confidence": confidence_score,
+        "reasoning": reasoning,
+        "metrics_evaluated": {
+            "control_weight": control,
+            "arithmetic_weight": arithmetic,
+            "state_depth": registers,
+            "systemverilog_interfaces": sv_interfaces,
+            "systemverilog_structs": sv_structs,
+            "existing_sva_assertions": sva_count,
+            "rvvi_compliance_hooks": rvvi_count
+        },
+        "generated_eda_scripts": {
+            "formal_tcl_commands": tcl_recipe,
+            "simulation_compile_commands": sim_recipe
+        }
+    }
+    
+    print(json.dumps(strategy, indent=4))
+
+if __name__ == "__main__":
+    input_data = sys.stdin.read()
+    evaluate_verification_path(input_data)

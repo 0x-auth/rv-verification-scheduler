@@ -1,0 +1,18 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# System configurations
+.DS_Store
+.thumbs.db
+
+# EDA Tool working directories & log files
+work/
+transcript
+*.log
+*.syn
+*.pva
+*.cmd
+.xcelium.d/
+simv.da/
