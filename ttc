@@ -17,38 +17,47 @@ def evaluate_verification_path(metrics_json_str):
     sva_count = metrics.get("sva_assertions", 0)
     rvvi_count = metrics.get("rvvi_trace_interfaces", 0)
     
-    routing_decision = "SIMULATION"
-    confidence_score = 0.0
+    routing_decision = "HYBRID_SPLIT"
+    confidence_score = 0.50
     reasoning = ""
     
-    total_structural_complexity = registers + (sv_interfaces * 4) + (sv_structs * 2)
-    
-    # Corrected evaluation thresholds reflecting all tracked structural vectors
-    if arithmetic == 0 and control > 0 and rvvi_count == 0:
+    # 1. PURE CONTROL LOGIC ROUTING (e.g., ibex_decoder)
+    # If control branches heavily dominate arithmetic (ratio > 10:1), it belongs in Formal, 
+    # even if the register state depth is large.
+    if control > 0 and (arithmetic == 0 or (control / arithmetic) >= 10) and rvvi_count == 0:
         routing_decision = "FORMAL"
-        confidence_score = 1.0
-        reasoning = "Pure control logic layout without math operator complexity. Ideal target for complete formal proofs."
+        confidence_score = 0.95
+        reasoning = "High control-to-arithmetic density ratio detected. Structure is highly optimal for comprehensive formal model checking."
+        
+    # 2. EXPLICIT COMPLIANCE INTERFACE HOOKS
     elif rvvi_count > 0 and control >= arithmetic:
         routing_decision = "FORMAL"
         confidence_score = 0.95
         reasoning = "Decoupled RVVI compliance verification protocols detected. Structured trace interfaces align with formal model verification."
-    elif control > (arithmetic * 3) and total_structural_complexity < 64:
-        routing_decision = "FORMAL"
-        confidence_score = 0.85
-        reasoning = "Control state paths dominate arithmetic operations with clean, bounded SystemVerilog signal grouping structures."
+        
+    # 3. HEAVY ARITHMETIC LOGIC ROUTING (e.g., ibex_multdiv_fast)
+    # If math calculations are present alongside significant register depth, 
+    # formal verification will hit a memory explosion wall. Route directly to simulation.
+    elif arithmetic >= 5 and registers >= 32:
+        routing_decision = "SIMULATION"
+        confidence_score = 0.95
+        reasoning = "High density of math operators matched with deep internal state registers will trigger immediate state space explosion in model checkers."
+        
+    # 4. TRADITIONAL ARITHMETIC OVER CONTROL
     elif arithmetic > control:
         routing_decision = "SIMULATION"
         confidence_score = 0.90
-        reasoning = "High arithmetic operator density will trigger immediate state space explosion in model checkers."
+        reasoning = "Arithmetic operator density outnumbers control branch syntax."
+        
+    # 5. BALANCED SYSTEM FALLBACK
     else:
         routing_decision = "HYBRID_SPLIT"
         confidence_score = 0.70
-        reasoning = "Balanced density profile. Requires structural partitioning between formal control block and mathematical datapath."
+        reasoning = "Balanced density profile. Requires structural partitioning between formal control blocks and mathematical datapaths."
         
     tcl_recipe = []
     sim_recipe = []
     
-    # Correct file extension based on presence of advanced constructs
     ext = "sv" if (sv_interfaces > 0 or sv_structs > 0 or rvvi_count > 0) else "v"
     
     if routing_decision in ["FORMAL", "HYBRID_SPLIT"]:
