@@ -1,0 +1,51 @@
+name: RTL Verification Structural Scan
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  lint-and-route:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Repository Code
+      uses: actions/checkout@v4
+
+    - name: Set up Python Environment
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Execute Void Interface Precheck
+      run: |
+        chmod +x parse_core.py
+        chmod +x test_pipeline_harness.sh
+        
+        echo "=================================================="
+        echo "   BUI-EST VOID INTERFACE PRECHECK PIPELINE       "
+        echo "=================================================="
+        
+        # 1. Structural Preservation Check (33 Max Depth Rule)
+        echo "Executing Directory Topology Depth Validation..."
+        DEPTH_VIOLATION=0
+        while read -r file; do
+          # Count directory separators to evaluate nesting level depth
+          DEPTH=$(tr -cd '/' <<< "$file" | wc -c)
+          if [ "$DEPTH" -gt 33 ]; then
+            echo "ANOMALY: File path depth boundary exceeded ($DEPTH > 33): $file"
+            DEPTH_VIOLATION=1
+          fi
+        done < <(find . -type f -name "*.v" -o -name "*.sv" ! -path "*/.*")
+        
+        if [ "$DEPTH_VIOLATION" -eq 1 ]; then
+          echo "ERROR: Manifold preservation boundary breached. Exiting execution."
+          exit 1
+        fi
+        echo "Topology verified within valid limits."
+        echo ""
+        
+        # 2. Execute Invariant Metrics Check Matrix
+        ./test_pipeline_harness.sh
