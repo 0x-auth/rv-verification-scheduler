@@ -1,122 +1,126 @@
+#!/usr/bin/env python3
+"""
+ttc - verification track classifier.
+
+Routes an RTL block to FORMAL, SIMULATION, or HYBRID_SPLIT using the two
+signals that actually predict formal-tool tractability:
+
+  * nonlinear_arith_ops  - var*var multiply, divide, modulo. The dominant
+    cause of solver/BDD blow-up. Even one wide var*var multiply is usually
+    enough to make an unbounded formal proof intractable.
+
+  * sequential_state_bits - width-weighted flop state. Reachable-state size
+    grows ~2^bits, so beyond a threshold, unbounded proofs stop converging.
+
+Decision order (most decisive signal first). Thresholds below are STARTING
+points meant to be calibrated against real tool behaviour (see README /
+benchmark), not universal truths - and crucially, they are ordinary
+engineering thresholds, not derived from any physical constant.
+"""
 import json
 import sys
-import math
 
-def evaluate_verification_path(metrics_json_str):
-    try:
-        metrics = json.loads(metrics_json_str)
-    except Exception as e:
-        print(f"JSON Parsing Error inside ttc: {str(e)}", file=sys.stderr)
-        sys.exit(1)
-    
-    module_name = metrics.get("module_name", "dut")
-    control = metrics.get("control_density", 0)
-    arithmetic = metrics.get("arithmetic_density", 0)
-    registers = metrics.get("state_registers", 0)
-    sv_interfaces = metrics.get("sv_interfaces", 0)
-    sv_structs = metrics.get("sv_structs", 0)
-    sva_count = metrics.get("sva_assertions", 0)
-    rvvi_count = metrics.get("rvvi_trace_interfaces", 0)
-    
-    routing_decision = "HYBRID_SPLIT"
-    confidence_score = 0.50
-    reasoning = ""
-    
-    # Universal Scaling Constants
-    ALPHA_BASE = 137.0
-    FIB_5 = 5.0
-    FIB_3 = 2.0
-    
-    ALPHA_CORRECTED = ALPHA_BASE + (FIB_5 / (ALPHA_BASE + FIB_3))
-    ALPHA_LIMIT = 1.0 / ALPHA_CORRECTED  # ~0.007297
-    
-    PHI = (1.0 + math.sqrt(5.0)) / 2.0
-    SCALE_515 = (PHI / math.pi) * 1000.0  # ~515.036
-    
-    total_states = registers + (sv_interfaces * 4) + (sv_structs * 2)
-    
-    system_coupling = (arithmetic / total_states) if total_states > 0 else 0.0
-    complexity_envelope = (arithmetic * SCALE_515) / (total_states if total_states > 0 else 1.0)
-    
-    # 1. PURE CONTROL MANIFOLD
-    if arithmetic == 0 and control > 0 and rvvi_count == 0:
-        routing_decision = "FORMAL"
-        confidence_score = 1.0
-        reasoning = "Pure control logic manifold without arithmetic interaction logic."
-        
-    # 2. STRATIFIED COMPLIANCE TRACKING (RVVI)
-    elif rvvi_count > 0 and control >= arithmetic:
-        routing_decision = "FORMAL"
-        confidence_score = 0.95
-        reasoning = "Decoupled RVVI compliance verification protocols detected."
-        
-    # 3. HIGH-RATIO SYSTEM CONTROL EXEMPTION (e.g., ibex_decoder)
-    # If the control paths heavily dominate arithmetic paths by a 10:1 ratio, 
-    # it remains a formal proof target despite breaking basic coupling density thresholds.
-    elif control > 0 and arithmetic > 0 and (control / arithmetic) >= 10:
-        routing_decision = "FORMAL"
-        confidence_score = 0.95
-        reasoning = f"High control-to-math distribution matrix clears formal execution constraints. State space stays boundable."
-        
-    # 4. FINE-STRUCTURE & 515 ENVELOPE STRUCTURAL COLLAPSE GATE (e.g., ibex_multdiv_fast)
-    # A true state space explosion occurs when the coupling ratio breaks the fine-structure limit
-    # AND the absolute complexity envelope expands past the critical structural mass scale parameter (51.5).
-    elif system_coupling > ALPHA_LIMIT and complexity_envelope > 51.5 and total_states >= 32:
-        routing_decision = "SIMULATION"
-        confidence_score = 0.98
-        reasoning = f"Dual invariant breach: System coupling exceeds alpha limit ({system_coupling:.4f} > {ALPHA_LIMIT:.4f}) and complexity envelope scales past 51.5 limit ({complexity_envelope:.2f}). Formal memory boundaries will experience catastrophic collapse."
-        
-    # 5. BALANCED SYSTEM FALLBACK
+# --- calibratable thresholds (tune against real formal-tool runs) --------
+WIDE_MULT_BITS = 8          # a var*var op on operands wider than this is a
+                            # near-certain unbounded-proof killer
+STATE_BITS_HARD = 64        # flop state beyond this rarely proves unbounded
+STATE_BITS_SOFT = 24        # above this, prefer bounded/hybrid over full proof
+
+
+def classify(m):
+    name = m.get("module_name", "dut")
+    nonlin = m.get("nonlinear_arith_ops", 0)
+    state_bits = m.get("sequential_state_bits", 0)
+    dpw = m.get("max_datapath_width", 0)
+    control = m.get("control_ops", 0)
+    rvvi = m.get("rvvi_hooks", 0)
+    sva = m.get("sva_assertions", 0)
+
+    decision, conf, why = "HYBRID_SPLIT", 0.60, ""
+
+    # 1. Nonlinear arithmetic -> simulation. The clearest formal killer.
+    if nonlin > 0 and dpw >= WIDE_MULT_BITS:
+        decision, conf = "SIMULATION", 0.97
+        why = (f"{nonlin} nonlinear op(s) (var*var / div / mod) on datapath "
+               f"up to {dpw} bits wide. Unbounded formal proof will not "
+               f"converge; route to simulation (or bounded/BMC).")
+    elif nonlin > 0:
+        decision, conf = "HYBRID_SPLIT", 0.80
+        why = (f"{nonlin} narrow nonlinear op(s) ({dpw}-bit). Bounded formal "
+               f"(BMC) is viable; isolate datapath to simulation if depth grows.")
+
+    # 2. Very large sequential state -> simulation / bounded only.
+    elif state_bits > STATE_BITS_HARD:
+        decision, conf = "SIMULATION", 0.90
+        why = (f"{state_bits} bits of sequential state exceed the unbounded "
+               f"proof budget ({STATE_BITS_HARD}); reachability will not close.")
+
+    # 3. RVVI/RVFI compliance or explicit assertions -> formal is the point.
+    elif rvvi > 0 or sva > 0:
+        decision, conf = "FORMAL", 0.95
+        why = (f"Compliance/assertion hooks present (rvvi/rvfi={rvvi}, "
+               f"sva={sva}); formal gives complete coverage of these properties.")
+
+    # 4. Pure / mostly control, bounded state -> formal.
+    elif nonlin == 0 and state_bits <= STATE_BITS_SOFT and control > 0:
+        decision, conf = "FORMAL", 0.92
+        why = (f"Control-dominated, {state_bits} state bits, no nonlinear "
+               f"arithmetic. Well within unbounded-proof reach.")
+
+    # 5. Moderate state, no nonlinear arithmetic -> hybrid.
     else:
-        routing_decision = "HYBRID_SPLIT"
-        confidence_score = 0.70
-        reasoning = "Balanced density profile requiring hardware datapath partitioning."
-        
-    tcl_recipe = []
-    sim_recipe = []
-    
-    ext = "sv" if (sv_interfaces > 0 or sv_structs > 0 or rvvi_count > 0) else "v"
-    
-    if routing_decision in ["FORMAL", "HYBRID_SPLIT"]:
-        tcl_recipe = [
-            f"# Automated Formal Script Generation for {module_name}",
-            "clear -all",
-            f"analyze -sv {module_name}.{ext}",
-            f"elaborate -top {module_name}",
-            "clock clk",
-            "reset rst",
-            "proven -all"
-        ]
-        
-    if routing_decision in ["SIMULATION", "HYBRID_SPLIT"]:
-        sim_recipe = [
-            f"# Automated Testbench Compilation for {module_name}",
-            "vlib work",
-            f"vlog +acc {module_name}.{ext}",
-            f"vsim -c -do \"run -all; quit\" work.{module_name}_tb"
-        ]
-        
-    strategy = {
-        "target_module": module_name,
-        "recommended_engine": routing_decision,
-        "confidence": confidence_score,
-        "reasoning": reasoning,
+        decision, conf = "HYBRID_SPLIT", 0.70
+        why = (f"{state_bits} state bits, no nonlinear arithmetic. Formal the "
+               f"control, isolate wide datapath to simulation.")
+
+    return decision, conf, why
+
+
+def recipe(name, decision, ext):
+    tcl, sim = [], []
+    if decision in ("FORMAL", "HYBRID_SPLIT"):
+        tcl = [f"# Formal script for {name}", "clear -all",
+               f"analyze -sv {name}.{ext}", f"elaborate -top {name}",
+               "clock clk", "reset rst", "prove -all"]
+    if decision in ("SIMULATION", "HYBRID_SPLIT"):
+        sim = [f"# Sim compile for {name}", "vlib work",
+               f"vlog +acc {name}.{ext}",
+               f'vsim -c -do "run -all; quit" work.{name}_tb']
+    return tcl, sim
+
+
+def main(raw):
+    try:
+        m = json.loads(raw)
+    except Exception as e:
+        print(f"JSON parse error in ttc: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    decision, conf, why = classify(m)
+    ext = "sv" if (m.get("sv_interfaces") or m.get("sv_structs")
+                   or m.get("rvvi_hooks")) else "v"
+    tcl, sim = recipe(m.get("module_name", "dut"), decision, ext)
+
+    print(json.dumps({
+        "target_module": m.get("module_name", "dut"),
+        "recommended_engine": decision,
+        "confidence": conf,
+        "reasoning": why,
         "metrics_evaluated": {
-            "control_weight": control,
-            "arithmetic_weight": arithmetic,
-            "state_depth": total_states,
-            "system_coupling_ratio": round(system_coupling, 6),
-            "invariant_alpha_limit": round(ALPHA_LIMIT, 6),
-            "computed_515_envelope": round(complexity_envelope, 4)
+            "nonlinear_arith_ops": m.get("nonlinear_arith_ops", 0),
+            "nonlinear_detail": m.get("nonlinear_detail", []),
+            "sequential_state_bits": m.get("sequential_state_bits", 0),
+            "max_datapath_width": m.get("max_datapath_width", 0),
+            "control_ops": m.get("control_ops", 0),
+            "rvvi_hooks": m.get("rvvi_hooks", 0),
+            "sva_assertions": m.get("sva_assertions", 0),
         },
         "generated_eda_scripts": {
-            "formal_tcl_commands": tcl_recipe,
-            "simulation_compile_commands": sim_recipe
-        }
-    }
-    
-    print(json.dumps(strategy, indent=4))
+            "formal_tcl_commands": tcl,
+            "simulation_compile_commands": sim,
+        },
+    }, indent=4))
+
 
 if __name__ == "__main__":
-    input_data = sys.stdin.read()
-    evaluate_verification_path(input_data)
+    main(sys.stdin.read())
