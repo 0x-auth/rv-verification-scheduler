@@ -79,8 +79,13 @@ Example — a 32×32 multiplier is correctly sent to simulation, with the reason
 ## Limitations (honest)
 
 - Static source estimate, not elaboration: it does not build the real cone of
-  logic, so state-bit counts are upper-ish estimates (e.g. interface signals may
-  be counted as state). Conservative by design.
+  logic. Combinational `logic` may be counted as state, which over-estimates;
+  declarations spread over multiple lines may be missed, which under-estimates.
+  Under-estimating is the unsafe direction here — it routes an intractable
+  module to FORMAL and burns the CI time this pass exists to save — so treat a
+  near-threshold result as a reason to check the module by hand.
+  `sample_multi_decl.v` is the regression fixture for this (72 state bits; an
+  earlier version reported 56).
 - Thresholds are uncalibrated defaults. They should be fit to real runs.
 - Macro-heavy or generate-heavy code is not expanded.
 
@@ -98,7 +103,7 @@ heuristic router into a measured one.
 parse_core.py             # static RTL metric extractor
 ttc                       # verification-track classifier
 test_pipeline_harness.sh  # batch wrapper over the workspace
-sample_*.v / *.sv         # test fixtures (control, arithmetic, RVVI, mixed)
+sample_*.v / *.sv         # test fixtures (control, arithmetic, RVVI, mixed, multi-decl)
 ```
 
 ## License
