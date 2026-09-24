@@ -7,7 +7,9 @@ that actually predict formal-tool tractability:
 
   1. sequential_state_bits - the width-weighted count of flip-flop state.
      Formal reachability / BDD size scales with STATE BITS, not register
-     *count*. A single `reg [63:0]` is 64 bits of state, not "1".
+     *count*. A single `reg [63:0]` is 64 bits of state, not "1", and
+     `reg [7:0] a, b, c;` is 24 bits, not 8. Input-direction signals are
+     not state; `output reg` is.
 
   2. nonlinear_arith - variable x variable multiply, divide, and modulo.
      These are the classic model-checker killers. A shift, or a multiply by
@@ -74,9 +76,38 @@ class VerilogMetricsParser:
         # state. We width-weight every such declaration. This is an estimate,
         # not elaboration, but it tracks BDD/reachability cost far better than
         # counting the keyword.
-        for decl in re.finditer(r'\b(reg|logic)\b\s*(\[[^\]]*\])?\s*(\w+)', content):
-            w = self._width(decl.group(0))
-            metrics["sequential_state_bits"] += w
+        #
+        # A declaration may name SEVERAL signals: `reg [7:0] a, b, c;` is
+        # 24 bits, not 8. An earlier version captured only the first
+        # identifier and so UNDER-counted state, which is the unsafe
+        # direction for this tool: under-counting routes an intractable
+        # module to FORMAL and burns the CI time this pass exists to save.
+        #
+        # `input`-direction signals are not state and are excluded.
+        # `output reg` IS state and is kept.
+        NOT_NAMES = {'input', 'output', 'inout', 'var', 'signed', 'unsigned',
+                     'reg', 'logic', 'wire', 'bit', 'automatic', 'static'}
+        decl_re = re.compile(
+            r'\b(input|output|inout)?\s*(?:var\s+)?'
+            r'\b(?:reg|logic)\b'
+            r'\s*(?:signed|unsigned)?'
+            r'\s*(\[[^\]]*\])?'
+            r'([^;)\n]*)')
+        for decl in decl_re.finditer(content):
+            direction, width_txt, tail = decl.group(1), decl.group(2), decl.group(3)
+            if direction == 'input':
+                continue
+            w = self._width(width_txt or '')
+            names = [n for n in re.findall(r'\b[A-Za-z_]\w*\b', tail or '')
+                     if n not in NOT_NAMES]
+            # an assignment or expression tail (`= foo`, `<= bar`) is not a
+            # second declared name; stop at the first '=' if present
+            if tail and '=' in tail:
+                head = tail.split('=')[0]
+                names = [n for n in re.findall(r'\b[A-Za-z_]\w*\b', head)
+                         if n not in NOT_NAMES]
+            n_names = max(len(names), 1)
+            metrics["sequential_state_bits"] += w * n_names
             metrics["max_datapath_width"] = max(metrics["max_datapath_width"], w)
 
         # ---- 2. Arithmetic: separate cheap from nonlinear ----------------
