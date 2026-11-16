@@ -1,79 +1,12 @@
 #!/usr/bin/env python3
-"""
-ttc - verification track classifier.
-
-Routes an RTL block to FORMAL, SIMULATION, or HYBRID_SPLIT using the two
-signals that actually predict formal-tool tractability:
-
-  * nonlinear_arith_ops  - var*var multiply, divide, modulo. The dominant
-    cause of solver/BDD blow-up. Even one wide var*var multiply is usually
-    enough to make an unbounded formal proof intractable.
-
-  * sequential_state_bits - width-weighted flop state. Reachable-state size
-    grows ~2^bits, so beyond a threshold, unbounded proofs stop converging.
-
-Decision order (most decisive signal first). Thresholds below are STARTING
-points meant to be calibrated against real tool behaviour (see README /
-benchmark), not universal truths - and crucially, they are ordinary
-engineering thresholds, not derived from any physical constant.
-"""
+"""Kept for compatibility. Reads parse_core.py JSON on stdin, prints a verdict.
+The logic now lives in rvsched/verilog.py (classify)."""
 import json
 import sys
+from pathlib import Path
 
-# --- calibratable thresholds (tune against real formal-tool runs) --------
-WIDE_MULT_BITS = 8          # a var*var op on operands wider than this is a
-                            # near-certain unbounded-proof killer
-STATE_BITS_HARD = 64        # flop state beyond this rarely proves unbounded
-STATE_BITS_SOFT = 24        # above this, prefer bounded/hybrid over full proof
-
-
-def classify(m):
-    name = m.get("module_name", "dut")
-    nonlin = m.get("nonlinear_arith_ops", 0)
-    state_bits = m.get("sequential_state_bits", 0)
-    dpw = m.get("max_datapath_width", 0)
-    control = m.get("control_ops", 0)
-    rvvi = m.get("rvvi_hooks", 0)
-    sva = m.get("sva_assertions", 0)
-
-    decision, conf, why = "HYBRID_SPLIT", 0.60, ""
-
-    # 1. Nonlinear arithmetic -> simulation. The clearest formal killer.
-    if nonlin > 0 and dpw >= WIDE_MULT_BITS:
-        decision, conf = "SIMULATION", 0.97
-        why = (f"{nonlin} nonlinear op(s) (var*var / div / mod) on datapath "
-               f"up to {dpw} bits wide. Unbounded formal proof will not "
-               f"converge; route to simulation (or bounded/BMC).")
-    elif nonlin > 0:
-        decision, conf = "HYBRID_SPLIT", 0.80
-        why = (f"{nonlin} narrow nonlinear op(s) ({dpw}-bit). Bounded formal "
-               f"(BMC) is viable; isolate datapath to simulation if depth grows.")
-
-    # 2. Very large sequential state -> simulation / bounded only.
-    elif state_bits > STATE_BITS_HARD:
-        decision, conf = "SIMULATION", 0.90
-        why = (f"{state_bits} bits of sequential state exceed the unbounded "
-               f"proof budget ({STATE_BITS_HARD}); reachability will not close.")
-
-    # 3. RVVI/RVFI compliance or explicit assertions -> formal is the point.
-    elif rvvi > 0 or sva > 0:
-        decision, conf = "FORMAL", 0.95
-        why = (f"Compliance/assertion hooks present (rvvi/rvfi={rvvi}, "
-               f"sva={sva}); formal gives complete coverage of these properties.")
-
-    # 4. Pure / mostly control, bounded state -> formal.
-    elif nonlin == 0 and state_bits <= STATE_BITS_SOFT and control > 0:
-        decision, conf = "FORMAL", 0.92
-        why = (f"Control-dominated, {state_bits} state bits, no nonlinear "
-               f"arithmetic. Well within unbounded-proof reach.")
-
-    # 5. Moderate state, no nonlinear arithmetic -> hybrid.
-    else:
-        decision, conf = "HYBRID_SPLIT", 0.70
-        why = (f"{state_bits} state bits, no nonlinear arithmetic. Formal the "
-               f"control, isolate wide datapath to simulation.")
-
-    return decision, conf, why
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from rvsched.verilog import classify  # noqa: E402
 
 
 def recipe(name, decision, ext):
@@ -95,30 +28,18 @@ def main(raw):
     except Exception as e:
         print(f"JSON parse error in ttc: {e}", file=sys.stderr)
         sys.exit(1)
-
     decision, conf, why = classify(m)
-    ext = "sv" if (m.get("sv_interfaces") or m.get("sv_structs")
-                   or m.get("rvvi_hooks")) else "v"
-    tcl, sim = recipe(m.get("module_name", "dut"), decision, ext)
-
+    name = m.get("module_name", "dut")
+    ext = "sv" if (m.get("sv_interfaces") or m.get("sv_structs") or m.get("rvvi_hooks")) else "v"
+    tcl, sim = recipe(name, decision, ext)
+    keys = ("nonlinear_arith_ops", "nonlinear_detail", "sequential_state_bits",
+            "max_datapath_width", "control_ops", "rvvi_hooks", "sva_assertions")
     print(json.dumps({
-        "target_module": m.get("module_name", "dut"),
-        "recommended_engine": decision,
-        "confidence": conf,
-        "reasoning": why,
-        "metrics_evaluated": {
-            "nonlinear_arith_ops": m.get("nonlinear_arith_ops", 0),
-            "nonlinear_detail": m.get("nonlinear_detail", []),
-            "sequential_state_bits": m.get("sequential_state_bits", 0),
-            "max_datapath_width": m.get("max_datapath_width", 0),
-            "control_ops": m.get("control_ops", 0),
-            "rvvi_hooks": m.get("rvvi_hooks", 0),
-            "sva_assertions": m.get("sva_assertions", 0),
-        },
-        "generated_eda_scripts": {
-            "formal_tcl_commands": tcl,
-            "simulation_compile_commands": sim,
-        },
+        "target_module": name, "recommended_engine": decision,
+        "confidence": conf, "reasoning": why,
+        "metrics_evaluated": {k: m.get(k, [] if k == "nonlinear_detail" else 0) for k in keys},
+        "generated_eda_scripts": {"formal_tcl_commands": tcl,
+                                  "simulation_compile_commands": sim},
     }, indent=4))
 
 

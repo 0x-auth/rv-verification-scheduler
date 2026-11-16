@@ -1,0 +1,34 @@
+name: rvsched
+description: Route each RTL module to formal or simulation before running either, and skip structures already proved.
+branding:
+  icon: git-branch
+  color: blue
+inputs:
+  files:
+    description: RTL files (space-separated globs allowed)
+    required: true
+  store:
+    description: Store directory, or https raw URL of a committed store (read-only)
+    default: .rvsched
+  defines:
+    description: Space-separated preprocessor defines your flow uses (e.g. "FORMAL SYNTH")
+    default: ""
+outputs:
+  plan:
+    description: Path to the JSON plan
+    value: ${{ steps.route.outputs.plan }}
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+    - shell: bash
+      run: pip install --quiet "${{ github.action_path }}"
+    - id: route
+      shell: bash
+      run: |
+        D=""; for d in ${{ inputs.defines }}; do D="$D -D $d"; done
+        rvsched route ${{ inputs.files }} --store "${{ inputs.store }}" $D > rvsched-plan.json
+        echo "plan=rvsched-plan.json" >> "$GITHUB_OUTPUT"
+        python3 -c "import json; [print(f\"{r['module']:<28} {r['decision']['action']:<10} {r['decision']['engine']}\") for r in json.load(open('rvsched-plan.json'))]"

@@ -1,111 +1,89 @@
-# RV Verification Scheduler
+# rvsched
 
-A static pre-compile linter for RISC-V RTL that decides, per module, whether a
-block should go to a **formal** engine or to **simulation** — *before* you spend
-CI time discovering that a formal proof will never converge.
+Before you run formal verification on an RTL module, ask two questions:
 
-## Why
+1. **Has this exact structure already been proved?** If so, skip it.
+2. **If not, will formal finish, or should this go to simulation?**
 
-Formal verification gives complete, mathematical coverage — but only on blocks
-whose reachable state stays tractable. Two things reliably break it:
-
-1. **Nonlinear arithmetic** — a variable-times-variable multiply, divide, or
-   modulo. These are the classic model-checker killers. (A shift, or a multiply
-   by a constant / power of two, is cheap and does *not* break formal.)
-2. **Large sequential state** — reachable-state size grows roughly `2^bits`, so
-   past some width of flip-flop state, unbounded proofs stop closing.
-
-The usual failure mode is to point a formal tool at an ALU or a wide datapath,
-watch it run for hours, and hit a memory-timeout — CI compute burned to learn
-something a two-second static pass could have told you. This tool is that pass.
-Control-dominated logic → formal (full coverage). Wide/nonlinear datapath →
-simulation (or bounded/BMC). Mixed → a hybrid split.
-
-## What it measures
-
-`parse_core.py` statically extracts, per module:
-
-| Signal | What it means | Why it matters |
-|---|---|---|
-| `sequential_state_bits` | width-weighted flop state (`reg [63:0]` = 64, not 1) | reachability / BDD cost scales with state bits |
-| `nonlinear_arith_ops` | `var*var`, `/`, `%` (constant/shift excluded) | the dominant cause of formal blow-up |
-| `max_datapath_width` | widest declared signal | wide nonlinear ops are worse |
-| `control_ops` | `always`, `if`, `case`, … | control logic is formal-friendly |
-| `rvvi_hooks` | RVVI / RVFI interface traces | these are what you formally check |
-| `sva_assertions` | `assert`/`assume`/`cover property` | explicit formal targets |
-
-Note: this is a static estimate from source, not full elaboration. It is
-deliberately cheap (regex-grade) so it can run in the pre-compile phase. It
-trades exactness for speed — see *Limitations*.
-
-## How routing works
-
-`ttc` reads the metrics and routes with the most decisive signal first:
-
-1. nonlinear arithmetic on a wide datapath → **SIMULATION**
-2. narrow nonlinear arithmetic → **HYBRID** (bounded formal / BMC viable)
-3. sequential state beyond the proof budget → **SIMULATION**
-4. RVVI/RVFI or assertions present → **FORMAL** (that's the point of them)
-5. control-dominated, bounded state, no nonlinear arithmetic → **FORMAL**
-6. otherwise → **HYBRID_SPLIT**
-
-The thresholds (`WIDE_MULT_BITS`, `STATE_BITS_HARD`, `STATE_BITS_SOFT` at the
-top of `ttc`) are ordinary engineering starting points, meant to be **calibrated
-against real tool behaviour** — not universal constants. Tune them to your
-formal tool and core.
-
-## Quick start
+`rvsched` answers both in about a second, without running any solver and without an AI model.
 
 ```bash
-# whole workspace
-./test_pipeline_harness.sh
-
-# single module
-python3 parse_core.py sample_arithmetic.v | python3 ttc
+pip install rvsched
+rvsched route rtl/*.v
 ```
-
-Example — a 32×32 multiplier is correctly sent to simulation, with the reason:
 
 ```json
-{
-  "target_module": "riscv_alu_multiplier",
-  "recommended_engine": "SIMULATION",
-  "confidence": 0.97,
-  "reasoning": "2 nonlinear op(s) (var*var / div / mod) on datapath up to 64 bits wide. Unbounded formal proof will not converge; route to simulation (or bounded/BMC).",
-  "metrics_evaluated": { "nonlinear_arith_ops": 2, "nonlinear_detail": ["op_a * op_b", "op_a / op_b"], "sequential_state_bits": 64, "max_datapath_width": 64 }
-}
+{ "module": "riscv_alu_multiplier",
+  "decision": { "action": "RUN", "engine": "SIMULATION",
+    "reason": "2 nonlinear op(s) with operands up to 32 bits. Unbounded formal will not converge." } }
 ```
 
-## Limitations (honest)
+## How it works
 
-- Static source estimate, not elaboration: it does not build the real cone of
-  logic. Combinational `logic` may be counted as state, which over-estimates;
-  declarations spread over multiple lines may be missed, which under-estimates.
-  Under-estimating is the unsafe direction here — it routes an intractable
-  module to FORMAL and burns the CI time this pass exists to save — so treat a
-  near-threshold result as a reason to check the module by hand.
-  `sample_multi_decl.v` is the regression fixture for this (72 state bits; an
-  earlier version reported 56).
-- Thresholds are uncalibrated defaults. They should be fit to real runs.
-- Macro-heavy or generate-heavy code is not expanded.
+- **Recognize.** It reads the source and looks for what makes formal proofs blow up: variable × variable multiply, divide or modulo on wide operands, and large flip-flop state. It doesn't solve anything.
+- **Fingerprint.** It hashes each module's *structure*. Renaming signals or modules, comments and whitespace don't change the hash; changing logic does. A parent's hash includes its children's hashes.
+- **Remember.** After your tool runs, you record what happened. Next time the same structure appears, in this repo or a renamed copy anywhere else, the recorded result is used directly.
 
-## Roadmap
-
-The next real step is calibration: run these predictions against what an actual
-open-source formal flow (e.g. Yosys + SymbiYosys, or the `riscv-formal` /
-RVFI framework) *actually does* — converge vs. timeout — on real open cores
-(Ibex, PicoRV32, VexRiscv), and report the prediction accuracy. That turns a
-heuristic router into a measured one.
-
-## Layout
-
+```bash
+rvsched record rtl/*.v --module fifo --engine FORMAL --status proved --evidence https://ci/run/42
+rvsched route rtl/*.v          # fifo -> SKIP, already proved
+rvsched calibrate              # how often the predictions were wrong
 ```
-parse_core.py             # static RTL metric extractor
-ttc                       # verification-track classifier
-test_pipeline_harness.sh  # batch wrapper over the workspace
-sample_*.v / *.sv         # test fixtures (control, arithmetic, RVVI, mixed, multi-decl)
+
+Recorded outcomes override predictions. If formal timed out on a structure once, that structure goes to simulation from then on. Every verdict says why, and every skip points to its evidence.
+
+## Share results
+
+The store is a plain folder (`.rvsched/`). Commit it, and anyone can read it from its raw URL without installing a server:
+
+```bash
+rvsched route rtl/*.v --store https://raw.githubusercontent.com/you/repo/main/.rvsched
 ```
+
+## In CI
+
+```yaml
+- uses: 0x-auth/rv-verification-scheduler@v0.1.0
+  with:
+    files: rtl/*.v
+```
+
+## Measured
+
+`bench/run.py` gives each module to a real formal tool (Yosys equivalence checking: RTL against its own synthesized netlist, 60 s limit) and compares the outcome with the prediction made beforehand. The run covered 28 modules: PicoRV32, the examples, and small probe modules written for this test.
+
+| | |
+|---|---|
+| scored | 25 (3 PicoRV32 wrappers predicted correctly but can't be cached, see below) |
+| wrong | 2: `counter_128` and `picorv32_pcpi_mul`, sent to simulation but formal proved them |
+| multipliers | 8-bit operands proved, 10-bit and wider did not |
+
+**Read honestly.** The multiplier threshold was fixed using this same run, so those rows are not an independent test. This kind of check matches flip-flops by name, so it says little about the state-size rule; both misses come from that rule. A property-checking benchmark is the next test.
+
+To reproduce (needs `yosys` or `pip install yowasp-yosys`): `python3 bench/run.py path/to/picorv32.v`, then `rvsched calibrate --store bench/.rvsched`.
+
+## Limits
+
+- It reads source; it doesn't elaborate the design. Unresolvable widths are assumed to be 32 bits, because guessing too high is the safe direction.
+- A module that depends on something it can't see (an unknown module, a package, an undefined macro) gets no fingerprint. It is never cached, only recognized.
+- If your flow uses `-D` defines, pass the same ones (`-D FORMAL`). They are folded into the fingerprint.
+- Thresholds live at the top of `rvsched/verilog.py`. Tune them to your tool, or let `calibrate` show you where they're wrong.
+
+## Extend it
+
+The core (`rvsched/core.py`) is three functions and one record format, and it doesn't change. New languages and stores are plugins:
+
+```toml
+# your package's pyproject.toml
+[project.entry-points."rvsched.languages"]
+vhdl = "my_pkg.vhdl"          # registers itself with @rvsched.language("vhdl")
+
+[project.entry-points."rvsched.stores"]
+s3 = "my_pkg.s3store"         # registers itself with @rvsched.store("s3")
+```
+
+A language provides `split`, `recognize` and `fingerprint`. A store provides `get`, `put` and `all`. The record format is `rvsched/1`; see `Record` in `core.py`.
 
 ## License
 
-Apache 2.0 — see `LICENSE`.
+Apache 2.0

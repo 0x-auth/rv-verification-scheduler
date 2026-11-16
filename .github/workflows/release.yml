@@ -1,0 +1,18 @@
+name: release
+# Push a tag like v0.1.0 to publish to PyPI. One-time setup on pypi.org:
+# add a trusted publisher for this repo with workflow "release.yml".
+on:
+  push:
+    tags: ["v*"]
+jobs:
+  pypi:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install build && python -m build
+      - uses: pypa/gh-action-pypi-publish@release/v1

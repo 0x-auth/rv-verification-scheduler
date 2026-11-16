@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rvsched"
+version = "0.1.0"
+description = "Decide formal vs simulation for each RTL module before you spend the compute, and never prove the same structure twice."
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.9"
+authors = [{ name = "Abhishek Srivastava", email = "aa20moon@gmail.com" }]
+keywords = ["verilog", "systemverilog", "formal-verification", "eda", "riscv", "ci", "rtl"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Topic :: Scientific/Engineering :: Electronic Design Automation (EDA)",
+  "Topic :: Software Development :: Testing",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/0x-auth/rv-verification-scheduler"
+
+[project.scripts]
+rvsched = "rvsched.cli:main"
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[tool.setuptools]
+packages = ["rvsched"]

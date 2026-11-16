@@ -16,3 +16,14 @@ transcript
 *.cmd
 .xcelium.d/
 simv.da/
+
+# rvsched
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+/.rvsched/
+bench/_ext/
+bench/probes/
+bench/.rvsched/
+bench/results.json
