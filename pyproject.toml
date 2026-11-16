@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Decide formal vs simulation for each RTL module before you spend the compute, and never prove the same structure twice."
 readme = "README.md"
 license = "Apache-2.0"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 authors = [{ name = "Abhishek Srivastava", email = "aa20moon@gmail.com" }]
 keywords = ["verilog", "systemverilog", "formal-verification", "eda", "riscv", "ci", "rtl"]
 classifiers = [
