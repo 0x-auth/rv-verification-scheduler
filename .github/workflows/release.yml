@@ -1,11 +1,15 @@
 name: release
-# Push a tag like v0.1.0 (or run manually) to publish to PyPI with the
-# PYPI_API_TOKEN repo secret (the api-relay copies it in from the Cloudflare
-# Secrets Store). Upload errors are surfaced as annotations.
+# Publishes to PyPI whenever the version in rvsched/__init__.py is new:
+# bump it, push to main, done. Then tags the commit vX.Y.Z.
+# Token: the PYPI_API_TOKEN repo secret (the api-relay copies it in from the
+# Cloudflare Secrets Store).
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
+    paths: ["rvsched/**", "pyproject.toml", "README.md"]
   workflow_dispatch:
+permissions:
+  contents: write
 jobs:
   pypi:
     runs-on: ubuntu-latest
@@ -14,13 +18,29 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install build twine && python -m build && twine check dist/*
+      - name: version
+        id: v
+        run: |
+          V=$(python -c "import rvsched; print(rvsched.__version__)")
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          if curl -sf "https://pypi.org/pypi/rvsched/$V/json" > /dev/null; then
+            echo "new=false" >> "$GITHUB_OUTPUT"; echo "::notice::$V is already on PyPI; nothing to publish"
+          else
+            echo "new=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.v.outputs.new == 'true'
+        run: pip install build twine pytest && pytest -q && python -m build && twine check dist/*
       - name: upload
+        if: steps.v.outputs.new == 'true'
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
         run: |
-          echo "::notice::token length ${#TWINE_PASSWORD}, starts with ${TWINE_PASSWORD:0:5}"
           twine upload --non-interactive --skip-existing --verbose dist/* > out.txt 2>&1 && { tail -3 out.txt; exit 0; }
           echo "::error::$(grep -iE 'error|forbidden|invalid|denied|HTTPError|too similar' out.txt | tail -5 | tr '\n' ' ')"
           exit 1
+      - name: tag
+        if: steps.v.outputs.new == 'true'
+        run: |
+          git tag "v${{ steps.v.outputs.version }}"
+          git push origin "v${{ steps.v.outputs.version }}"

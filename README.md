@@ -10,7 +10,10 @@ Before you run formal verification on an RTL module, ask two questions:
 ```bash
 pip install rvsched
 rvsched route rtl/*.v
+rvsched -h                  # every command has -h with examples
 ```
+
+Docs: [Usage](https://github.com/0x-auth/rv-verification-scheduler/blob/main/USAGE.md) · [Architecture](https://github.com/0x-auth/rv-verification-scheduler/blob/main/ARCHITECTURE.md)
 
 ```json
 { "module": "riscv_alu_multiplier",
@@ -43,7 +46,7 @@ rvsched route rtl/*.v --store https://raw.githubusercontent.com/you/repo/main/.r
 ## In CI
 
 ```yaml
-- uses: 0x-auth/rv-verification-scheduler@v0.1.0
+- uses: 0x-auth/rv-verification-scheduler@v0.1.1
   with:
     files: rtl/*.v
 ```
@@ -71,7 +74,7 @@ To reproduce (needs `yosys` or `pip install yowasp-yosys`): `python3 bench/run.p
 
 ## Extend it
 
-The core (`rvsched/core.py`) is three functions and one record format, and it doesn't change. New languages and stores are plugins:
+The core (`rvsched/core.py`) is three functions and one record format, and it doesn't change. New languages and stores are plugins ([details](https://github.com/0x-auth/rv-verification-scheduler/blob/main/ARCHITECTURE.md#extending)):
 
 ```toml
 # your package's pyproject.toml

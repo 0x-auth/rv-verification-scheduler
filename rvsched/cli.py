@@ -98,40 +98,112 @@ def cmd_calibrate(a):
     return 0
 
 
+HELP = """\
+Decide formal vs simulation for each RTL module before you spend the compute,
+and never prove the same structure twice. No solver runs, no AI model.
+
+start with `rvsched route -h`.
+
+examples:
+  rvsched route rtl/*.v
+  rvsched route rtl/*.v --metrics                 # include the numbers behind each verdict
+  rvsched record rtl/*.v --module fifo --engine FORMAL --status proved \\
+      --seconds 42 --evidence https://ci.example/run/42
+  rvsched calibrate
+  rvsched route rtl/*.v --store https://raw.githubusercontent.com/you/repo/main/.rvsched
+
+output: JSON on stdout. exit codes: 0 ok, 2 bad input, 3 module cannot be fingerprinted.
+docs: https://github.com/0x-auth/rv-verification-scheduler/blob/main/USAGE.md
+"""
+
+ROUTE_HELP = """\
+For each module in the given files, print a decision:
+
+  SKIP        this exact structure was already proved (evidence attached)
+  KNOWN_FAIL  this exact structure already failed formal; fix the design first
+  RUN         run it on the given engine: FORMAL, SIMULATION or HYBRID_SPLIT
+
+Pass every file the design needs. Submodules, interfaces, packages and `define
+macros found in other files are part of a module's fingerprint; anything not
+given makes the fingerprint null (never cached, only recognized).
+
+examples:
+  rvsched route rtl/*.v rtl/*.sv
+  rvsched route top.v -D FORMAL -D SYNTH
+  rvsched route rtl/*.v --metrics | jq '.[] | {module, engine: .decision.engine}'
+"""
+
+RECORD_HELP = """\
+Record a real tool outcome for one module. Recorded outcomes override
+predictions on every later `route`, in this repo or anywhere the same
+structure appears (renamed or not).
+
+statuses:
+  proved   formal proved it            -> later routes SKIP it
+  failed   formal found a bug          -> later routes say KNOWN_FAIL
+  timeout  formal did not finish       -> later routes send it to SIMULATION
+  unknown  the run told you nothing    -> ignored
+
+examples:
+  rvsched record rtl/*.v --module alu --engine FORMAL --status timeout --seconds 3600
+  rvsched record rtl/*.v --module fifo --engine FORMAL --status proved \\
+      --evidence https://github.com/you/repo/actions/runs/123
+"""
+
+CAL_HELP = """\
+Read every recorded outcome and report where predictions were wrong
+(e.g. predicted FORMAL but formal timed out). Use it to tune the thresholds
+at the top of rvsched/verilog.py for your tool.
+
+example:
+  rvsched calibrate --store .rvsched
+"""
+
+
 def main(argv=None):
-    p = argparse.ArgumentParser(prog="rvsched",
-                                description="Decide formal vs simulation before you spend the compute.")
-    p.add_argument("--version", action="version", version=f"rvsched {__version__}")
-    sub = p.add_subparsers(dest="cmd", required=True)
+    fmt = argparse.RawDescriptionHelpFormatter
+    p = argparse.ArgumentParser(prog="rvsched", description=HELP, formatter_class=fmt)
+    p.add_argument("-V", "--version", action="version", version=f"rvsched {__version__}")
+    sub = p.add_subparsers(dest="cmd", metavar="command")
 
     def common(sp):
-        sp.add_argument("--store", default=".rvsched",
-                        help="directory, or https:// raw URL (read-only). default: .rvsched")
-        sp.add_argument("--lang", default="verilog")
-        sp.add_argument("-D", "--define", action="append", default=[],
-                        help="preprocessor define used by your flow (folded into the fingerprint)")
+        sp.add_argument("--store", default=".rvsched", metavar="DIR|URL",
+                        help="where records live: a directory (default .rvsched) or the "
+                             "https raw URL of a committed store (read-only)")
+        sp.add_argument("--lang", default="verilog",
+                        help="language plugin (default verilog; plugins can add more)")
+        sp.add_argument("-D", "--define", action="append", default=[], metavar="NAME",
+                        help="preprocessor define your flow uses; folded into the "
+                             "fingerprint (repeatable)")
 
-    r = sub.add_parser("route", help="recommend an engine for every module")
-    r.add_argument("files", nargs="+")
-    r.add_argument("--metrics", action="store_true", help="include raw metrics")
+    r = sub.add_parser("route", help="recommend an engine for every module",
+                       description=ROUTE_HELP, formatter_class=fmt)
+    r.add_argument("files", nargs="+", help="Verilog/SystemVerilog files")
+    r.add_argument("--metrics", action="store_true",
+                   help="include the raw metrics behind each verdict")
     common(r)
     r.set_defaults(fn=cmd_route)
 
-    w = sub.add_parser("record", help="write what a tool actually did")
-    w.add_argument("files", nargs="+")
-    w.add_argument("--module", required=True)
-    w.add_argument("--engine", required=True, choices=ENGINES)
-    w.add_argument("--status", required=True, choices=STATUSES)
-    w.add_argument("--seconds", type=float)
-    w.add_argument("--evidence", help="URL or path to the log/proof")
+    w = sub.add_parser("record", help="write what a tool actually did",
+                       description=RECORD_HELP, formatter_class=fmt)
+    w.add_argument("files", nargs="+", help="the same files you routed")
+    w.add_argument("--module", required=True, help="module name")
+    w.add_argument("--engine", required=True, choices=ENGINES, help="engine that ran")
+    w.add_argument("--status", required=True, choices=STATUSES, help="what happened")
+    w.add_argument("--seconds", type=float, help="run time")
+    w.add_argument("--evidence", metavar="URL|PATH", help="link to the log or proof")
     common(w)
     w.set_defaults(fn=cmd_record)
 
-    c = sub.add_parser("calibrate", help="how often predictions missed reality")
+    c = sub.add_parser("calibrate", help="how often predictions missed reality",
+                       description=CAL_HELP, formatter_class=fmt)
     common(c)
     c.set_defaults(fn=cmd_calibrate)
 
     a = p.parse_args(argv)
+    if not a.cmd:
+        p.print_help()
+        return 0
     try:
         return a.fn(a)
     except (KeyError, ValueError, PermissionError, OSError) as e:

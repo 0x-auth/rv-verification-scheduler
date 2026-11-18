@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rvsched"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Decide formal vs simulation for each RTL module before you spend the compute, and never prove the same structure twice."
 readme = "README.md"
 license = "Apache-2.0"
@@ -20,6 +20,9 @@ dependencies = []
 
 [project.urls]
 Homepage = "https://github.com/0x-auth/rv-verification-scheduler"
+Documentation = "https://github.com/0x-auth/rv-verification-scheduler/blob/main/USAGE.md"
+Architecture = "https://github.com/0x-auth/rv-verification-scheduler/blob/main/ARCHITECTURE.md"
+Issues = "https://github.com/0x-auth/rv-verification-scheduler/issues"
 
 [project.scripts]
 rvsched = "rvsched.cli:main"
@@ -29,3 +32,6 @@ test = ["pytest"]
 
 [tool.setuptools]
 packages = ["rvsched"]
+
+[tool.setuptools.dynamic]
+version = { attr = "rvsched.__version__" }
